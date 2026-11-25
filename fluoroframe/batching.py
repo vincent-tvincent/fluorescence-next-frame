@@ -49,6 +49,8 @@ def largest_passing_batch(probe):
 def probe_cuda_batch(device, shape, history, width, lr, reserve_gib):
     if device.type != "cuda":
         raise ValueError("automatic batch selection needs CUDA; use an integer batch size on this device")
+    if device.index is None:
+        device = torch.device("cuda", torch.cuda.current_device())
     if not math.isfinite(reserve_gib) or reserve_gib < 0:
         raise ValueError("vram-reserve-gib must be finite and nonnegative")
     reserve = math.ceil(reserve_gib * GIB)

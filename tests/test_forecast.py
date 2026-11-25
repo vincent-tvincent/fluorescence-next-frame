@@ -5,13 +5,14 @@ from pathlib import Path
 import random
 from tempfile import TemporaryDirectory
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 import tifffile
 import torch
 
 from fluoroframe.cli import main
-from fluoroframe.batching import largest_passing_batch
+from fluoroframe.batching import configure_fp32, largest_passing_batch, probe_cuda_batch
 from fluoroframe.data import IntensityScale, Movie, clip_and_target, split_movies, training_batch
 from fluoroframe.model import FramePredictor
 
@@ -62,6 +63,20 @@ class ForecastTests(unittest.TestCase):
                 self.assertEqual(largest_passing_batch(lambda b: b <= limit), limit)
         with self.assertRaisesRegex(ValueError, "batch 1"):
             largest_passing_batch(lambda b: False)
+
+    @unittest.skipUnless(torch.cuda.is_available(), "requires CUDA")
+    def test_cuda_probe_accepts_default_device(self):
+        device = torch.device("cuda")
+        configure_fp32(device)
+
+        def single_trial(fits):
+            self.assertTrue(fits(1))
+            return 1
+
+        with patch("fluoroframe.batching.largest_passing_batch", side_effect=single_trial):
+            size, trials = probe_cuda_batch(device, (3, 9, 11), 2, 2, 0.001, 0.125)
+        self.assertEqual(size, 1)
+        self.assertTrue(trials[0]["passed"])
 
     def test_minibatch_collates_compatible_crops_and_successors(self):
         with TemporaryDirectory() as tmp:
