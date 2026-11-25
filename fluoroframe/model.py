@@ -1,6 +1,7 @@
 """One U-Net encoder and decoder with convolutional recurrence at the bottleneck."""
 
 from collections.abc import Iterable
+import math
 
 import torch
 from torch import Tensor, nn
@@ -22,20 +23,23 @@ class ConvGRU(nn.Module):
 
 
 class FramePredictor(nn.Module):
-    def __init__(self, ndim: int, width: int = 16):
+    def __init__(self, ndim: int, width: int = 16, *, decoder_negative_slope: float = 0.01):
         super().__init__()
         if ndim not in (2, 3) or width < 1:
             raise ValueError("ndim must be 2 or 3 and width must be positive")
+        if not math.isfinite(decoder_negative_slope) or decoder_negative_slope < 0:
+            raise ValueError("decoder_negative_slope must be finite and nonnegative")
         self.ndim = ndim
         self.width = width
+        self.decoder_negative_slope = decoder_negative_slope
         conv = nn.Conv2d if ndim == 2 else nn.Conv3d
 
-        def block(in_channels, out_channels, stride=1):
+        def block(in_channels, out_channels, stride=1, *, final_activation=None):
             return nn.Sequential(
                 conv(in_channels, out_channels, 3, stride=stride, padding=1),
                 nn.ReLU(),
                 conv(out_channels, out_channels, 3, padding=1),
-                nn.ReLU(),
+                nn.ReLU() if final_activation is None else final_activation,
             )
 
         self.fine = block(1, width)
@@ -43,7 +47,8 @@ class FramePredictor(nn.Module):
         self.coarse = block(2 * width, 4 * width, stride=2)
         self.memory = ConvGRU(conv, 4 * width)
         self.up_middle = block(6 * width, 2 * width)
-        self.up_fine = block(3 * width, width)
+        final_activation = nn.LeakyReLU(decoder_negative_slope) if decoder_negative_slope else nn.ReLU()
+        self.up_fine = block(3 * width, width, final_activation=final_activation)
         self.change = conv(width, 1, 1)
         # Start from the persistence forecast. Learning can add signed changes.
         nn.init.zeros_(self.change.weight)

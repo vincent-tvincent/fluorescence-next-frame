@@ -14,6 +14,7 @@ import torch
 from fluoroframe.cli import main
 from fluoroframe.batching import configure_fp32, largest_passing_batch, probe_cuda_batch
 from fluoroframe.data import IntensityScale, Movie, clip_and_target, split_movies, training_batch
+from fluoroframe.experiment import load_checkpoint
 from fluoroframe.model import FramePredictor
 
 
@@ -89,6 +90,26 @@ class ForecastTests(unittest.TestCase):
             torch.testing.assert_close(target[:, 0, 0, 0], clip[:, -1, 0, 0, 0] + 1)
             self.assertGreater(len(target[:, 0, 0, 0].unique()), 1)
 
+    def test_final_decoder_learns_from_negative_features_and_loads_legacy_weights(self):
+        model = FramePredictor(3, width=2)
+        final_conv = model.up_fine[-2]
+        with torch.no_grad():
+            final_conv.weight.zero_()
+            final_conv.bias.fill_(-1)
+            model.change.weight.fill_(1)
+        clip = torch.zeros(1, 1, 1, 3, 5, 7)
+        prediction = model(clip)
+        torch.testing.assert_close(prediction, torch.full_like(prediction, -0.02))
+        prediction.mean().backward()
+        torch.testing.assert_close(final_conv.bias.grad, torch.full_like(final_conv.bias, 0.01))
+
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "legacy.pt"
+            torch.save({"format": 1, "ndim": 3, "width": 2, "patch": [3, 5, 7],
+                        "scale": {"offset": 0.0, "span": 1.0}, "model": model.state_dict()}, path)
+            legacy, _, _ = load_checkpoint(path, torch.device("cpu"))
+            torch.testing.assert_close(legacy(clip), clip[:, -1])
+
     def test_model_streaming_and_gradients_on_odd_shapes(self):
         for shape in [(9, 11), (3, 9, 11)]:
             with self.subTest(shape=shape):
@@ -123,6 +144,9 @@ class ForecastTests(unittest.TestCase):
                 self.assertEqual(json.loads((run / "run.json").read_text())["batch_size"], 3 if len(shape) == 3 else 1)
                 self.assertTrue((run / "last.pt").is_file())
                 checkpoint = str(run / "best.pt")
+                loaded, _, _ = load_checkpoint(Path(checkpoint), torch.device("cpu"))
+                self.assertIsInstance(loaded.up_fine[-1], torch.nn.LeakyReLU)
+                self.assertEqual(loaded.up_fine[-1].negative_slope, 0.01)
                 options = ["--checkpoint", checkpoint, "--device", "cpu"]
                 report = StringIO()
                 with redirect_stdout(report):

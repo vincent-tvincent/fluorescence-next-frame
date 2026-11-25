@@ -89,7 +89,8 @@ def train(args, device):
     torch.manual_seed(args.seed)
     model = FramePredictor(ndim, args.width).to(device=device, dtype=torch.float32)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
-    config = {"ndim": ndim, "width": args.width, "patch": list(size), "scale": asdict(scale), "precision": "fp32"}
+    config = {"ndim": ndim, "width": args.width, "patch": list(size), "scale": asdict(scale),
+              "precision": "fp32", "decoder_negative_slope": model.decoder_negative_slope}
     settings = {**config, "training": describe(training), "validation": describe(validation),
                 "histories": histories, "validation_histories": val_histories, "seed": args.seed,
                 "lr": args.lr, "epochs": args.epochs, "steps_per_epoch": args.steps_per_epoch,
@@ -120,7 +121,7 @@ def train(args, device):
         score = result["model_mae"][str(max(val_histories))]
         if not math.isfinite(score):
             raise ValueError("validation MAE is non-finite; check the input intensities and learning rate")
-        state = {"format": 1, **config, "epoch": epoch, "model": model.state_dict()}
+        state = {"format": 2, **config, "epoch": epoch, "model": model.state_dict()}
         save_checkpoint(run / "last.pt", state)
         if score < best:
             save_checkpoint(run / "best.pt", state)
@@ -132,11 +133,16 @@ def train(args, device):
 
 def load_checkpoint(path: Path, device):
     checkpoint = torch.load(path, map_location="cpu", weights_only=True)
-    if checkpoint.get("format") != 1:
+    version = checkpoint.get("format")
+    if version not in (1, 2):
         raise ValueError(f"{path}: unsupported checkpoint format")
+    if version == 2 and "decoder_negative_slope" not in checkpoint:
+        raise ValueError(f"{path}: missing final decoder activation slope")
     if checkpoint.get("precision") == "fp32":
         configure_fp32(device)
-    model = FramePredictor(checkpoint["ndim"], checkpoint["width"])
+    # Format 1 always used ReLU. Activations have no entries in the parameter state dict.
+    slope = 0.0 if version == 1 else checkpoint["decoder_negative_slope"]
+    model = FramePredictor(checkpoint["ndim"], checkpoint["width"], decoder_negative_slope=slope)
     model.load_state_dict(checkpoint["model"])
     return model.to(device).eval(), IntensityScale(**checkpoint["scale"]), tuple(checkpoint["patch"])
 
