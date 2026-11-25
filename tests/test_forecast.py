@@ -2,6 +2,7 @@ from contextlib import redirect_stdout
 from io import StringIO
 import json
 from pathlib import Path
+import random
 from tempfile import TemporaryDirectory
 import unittest
 
@@ -10,7 +11,8 @@ import tifffile
 import torch
 
 from fluoroframe.cli import main
-from fluoroframe.data import IntensityScale, Movie, clip_and_target, split_movies
+from fluoroframe.batching import largest_passing_batch
+from fluoroframe.data import IntensityScale, Movie, clip_and_target, split_movies, training_batch
 from fluoroframe.model import FramePredictor
 
 
@@ -54,6 +56,24 @@ class ForecastTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "gap"):
                 Movie.open(movie)
 
+    def test_batch_probe_finds_last_safe_integer(self):
+        for limit in (1, 3, 8, 19):
+            with self.subTest(limit=limit):
+                self.assertEqual(largest_passing_batch(lambda b: b <= limit), limit)
+        with self.assertRaisesRegex(ValueError, "batch 1"):
+            largest_passing_batch(lambda b: False)
+
+    def test_minibatch_collates_compatible_crops_and_successors(self):
+        with TemporaryDirectory() as tmp:
+            movies = [Movie.open(make_movie(Path(tmp) / f"p{i}", 12, shape))
+                      for i, shape in enumerate([(9, 11), (13, 15)])]
+            clip, target = training_batch(movies, 4, 6, (20, 20), IntensityScale(0, 1),
+                                          torch.device("cpu"), random.Random(4))
+            self.assertEqual(clip.shape[:3], (6, 4, 1))
+            self.assertEqual(clip[:, -1].shape, target.shape)
+            torch.testing.assert_close(target[:, 0, 0, 0], clip[:, -1, 0, 0, 0] + 1)
+            self.assertGreater(len(target[:, 0, 0, 0].unique()), 1)
+
     def test_model_streaming_and_gradients_on_odd_shapes(self):
         for shape in [(9, 11), (3, 9, 11)]:
             with self.subTest(shape=shape):
@@ -83,7 +103,10 @@ class ForecastTests(unittest.TestCase):
                 with redirect_stdout(StringIO()):
                     main(["train", "--train", str(train), "--val", str(val), "--run", str(run),
                           "--epochs", "1", "--steps-per-epoch", "3", "--width", "2",
-                          "--histories", "1", "2", "4", "--val-samples", "2", "--device", "cpu"])
+                          "--histories", "1", "2", "4", "--val-samples", "2", "--device", "cpu",
+                          "--batch-size", "3" if len(shape) == 3 else "1"])
+                self.assertEqual(json.loads((run / "run.json").read_text())["batch_size"], 3 if len(shape) == 3 else 1)
+                self.assertTrue((run / "last.pt").is_file())
                 checkpoint = str(run / "best.pt")
                 options = ["--checkpoint", checkpoint, "--device", "cpu"]
                 report = StringIO()

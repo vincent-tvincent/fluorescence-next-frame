@@ -14,6 +14,10 @@ def positive(value):
     return number
 
 
+def batch_size(value):
+    return "auto" if value == "auto" else positive(value)
+
+
 def choose_device(requested):
     if requested == "auto":
         if torch.cuda.is_available():
@@ -45,6 +49,11 @@ def main(argv=None):
     p.add_argument("--width", type=positive, default=16, help="first encoder level channel count")
     p.add_argument("--epochs", type=positive, default=10)
     p.add_argument("--steps-per-epoch", type=positive, default=64)
+    p.add_argument("--batch-size", type=batch_size, default=1, metavar="N|auto",
+                   help="clips per optimizer update; auto probes the available CUDA memory")
+    p.add_argument("--vram-reserve-gib", type=float, default=1.0,
+                   help="free device memory to leave at peak when probing (GiB)")
+    p.add_argument("--log-every", type=positive, metavar="STEPS", help="print progress within each epoch")
     p.add_argument("--val-samples", type=positive, default=16, help="maximum fixed validation targets")
     p.add_argument("--lr", type=float, default=0.001)
     p.add_argument("--seed", type=int, default=42)

@@ -104,6 +104,7 @@ class IntensityScale:
             path, shape = paths[index]
             raw = read_frame(path, shape)
             indices = rng.integers(raw.size, size=min(raw.size, 8192))
+            indices.sort()  # Read sampled pages in disk order.
             samples.append(raw.flat[indices].astype(np.float64))
         values = np.concatenate(samples)
         if not np.isfinite(values).all():
@@ -142,3 +143,21 @@ def clip_and_target(movie, target, history, region, scale, device):
     frames = [scale.tensor(read_frame(path, movie.shape)[region], device)
               for path in movie.paths[start:target + 1]]
     return torch.stack(frames[:-1], dim=1), frames[-1]
+
+
+def training_batch(movies, history, batch, size, scale, device, rng):
+    """Collate independent same-history, same-shape crops in RAM, then transfer once."""
+    first = rng.choice(movies)
+    shape = tuple(map(min, zip(first.shape, size)))
+    compatible = [m for m in movies if tuple(map(min, zip(m.shape, size))) == shape]
+    clips, targets = [], []
+    for i in range(batch):
+        movie = first if i == 0 else rng.choice(compatible)
+        t = rng.randrange(history, len(movie.paths))
+        region = random_region(movie.shape, size, rng)
+        clip, target = clip_and_target(movie, t, history, region, scale, "cpu")
+        clips.append(clip)
+        targets.append(target)
+    if batch == 1:
+        return clips[0].to(device), targets[0].to(device)
+    return torch.cat(clips).to(device), torch.cat(targets).to(device)
